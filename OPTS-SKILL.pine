@@ -1,0 +1,180 @@
+// ============================================================
+// OPTS-SKILL — Smart Options Trading Strategy
+// Pine Script v5 | TradingView Compatible
+// 
+// Built on principles from:
+//   Steve Burns   — Risk Management (New Trader Rich Trader)
+//   Mark Douglas  — Psychology (Trading in the Zone)
+//   Jim Simons    — Data Patterns (The Man Who Solved the Market)
+//   Paul Wilmott  — Quant Finance (Put-Call Parity, Black-Scholes)
+//
+// Author: OPTS-SKILL Trading System
+// Version: 1.0.0
+// Tested on: SENSEX, NIFTY (Indian F&O markets)
+// ============================================================
+
+//@version=5
+strategy(
+  title             = "OPTS-SKILL — Burns + Douglas + Simons",
+  shorttitle        = "OPTS-SKILL",
+  overlay           = true,
+  pyramiding        = 0,
+  default_qty_type  = strategy.percent_of_equity,
+  default_qty_value = 2,
+  commission_type   = strategy.commission.percent,
+  commission_value  = 0.05,
+  slippage          = 2
+)
+
+// ─────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────
+
+// Trend
+ema_fast      = input.int(9,    "Fast EMA",           group="Trend Filter")
+ema_slow      = input.int(21,   "Slow EMA",           group="Trend Filter")
+ema_trend     = input.int(50,   "Trend EMA",          group="Trend Filter")
+
+// Momentum
+rsi_len       = input.int(14,   "RSI Length",         group="Momentum")
+rsi_ob        = input.int(70,   "RSI Overbought",     group="Momentum")
+rsi_os        = input.int(30,   "RSI Oversold",       group="Momentum")
+
+// Volatility
+atr_len       = input.int(14,   "ATR Length",         group="Volatility")
+atr_mult      = input.float(1.5,"ATR Multiplier",     group="Volatility")
+
+// Volume
+vol_ma_len    = input.int(20,   "Volume MA Length",   group="Volume")
+vol_surge     = input.float(1.5,"Volume Surge Mult",  group="Volume")
+
+// Risk Management (Burns: 2% rule)
+stop_atr      = input.float(2.0,"Stop Loss ATR Mult", group="Risk Management")
+profit_atr    = input.float(3.0,"Take Profit ATR Mult",group="Risk Management")
+
+// Options Parameters (Wilmott: Delta targeting)
+delta_target  = input.float(0.4,"Target Delta",       group="Options")
+dte_min       = input.int(30,   "Min DTE",            group="Options")
+dte_max       = input.int(45,   "Max DTE",            group="Options")
+
+// Session Filter (Douglas: trade only when present)
+use_session   = input.bool(true,      "Filter by Session", group="Filters")
+trade_session = input.session("0930-1600","Trade Session", group="Filters")
+
+// ─────────────────────────────────────────
+// CALCULATIONS
+// ─────────────────────────────────────────
+
+// EMAs
+f_ema      = ta.ema(close, ema_fast)
+s_ema      = ta.ema(close, ema_slow)
+t_ema      = ta.ema(close, ema_trend)
+bull_trend = f_ema > s_ema and s_ema > t_ema
+bear_trend = f_ema < s_ema and s_ema < t_ema
+
+// RSI
+rsi        = ta.rsi(close, rsi_len)
+
+// ATR — Simons: quantify volatility mathematically
+atr        = ta.atr(atr_len)
+atr_pct    = (atr / close) * 100
+high_vol   = atr_pct > ta.sma(atr_pct, 20) * atr_mult
+low_vol    = not high_vol
+
+// Volume
+vol_ma     = ta.sma(volume, vol_ma_len)
+vol_up     = volume > vol_ma * vol_surge
+
+// MACD
+[macd_line, signal_line, hist] = ta.macd(close, 12, 26, 9)
+macd_bull  = macd_line > signal_line and hist > 0
+macd_bear  = macd_line < signal_line and hist < 0
+
+// Bollinger Bands — Simons: detect squeeze patterns
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, 20, 2)
+bb_squeeze = (bb_upper - bb_lower) / bb_mid < 0.04
+
+// Session
+in_session = use_session ? not na(time(timeframe.period, trade_session)) : true
+
+// ─────────────────────────────────────────
+// SIGNALS
+// ─────────────────────────────────────────
+
+// BUY CALL Signal (all conditions must align — Douglas: no hesitation when edge appears)
+call_signal = bull_trend
+  and ta.crossover(f_ema, s_ema)
+  and rsi > 50 and rsi < rsi_ob
+  and vol_up
+  and macd_bull
+  and low_vol
+  and in_session
+
+// BUY PUT Signal
+put_signal = bear_trend
+  and ta.crossunder(f_ema, s_ema)
+  and rsi < 50 and rsi > rsi_os
+  and vol_up
+  and macd_bear
+  and low_vol
+  and in_session
+
+// SELL PREMIUM Signal (high IV — Simons: sell when others fearful)
+sell_call_signal = high_vol and bull_trend and rsi > rsi_ob and in_session
+sell_put_signal  = high_vol and bear_trend and rsi < rsi_os and in_session
+
+// STRADDLE Signal (BB squeeze — big move incoming, direction unknown)
+straddle_signal  = bb_squeeze and in_session
+
+// ─────────────────────────────────────────
+// RISK MANAGEMENT (Burns: set SL before entry)
+// ─────────────────────────────────────────
+
+long_sl = close - (atr * stop_atr)
+long_tp = close + (atr * profit_atr)
+short_sl = close + (atr * stop_atr)
+short_tp = close - (atr * profit_atr)
+
+// Strategy entries
+if call_signal
+    strategy.entry("CALL", strategy.long)
+    strategy.exit("CALL Exit", "CALL", stop=long_sl, limit=long_tp)
+
+if put_signal
+    strategy.entry("PUT", strategy.short)
+    strategy.exit("PUT Exit", "PUT", stop=short_sl, limit=short_tp)
+
+// ─────────────────────────────────────────
+// VISUALS
+// ─────────────────────────────────────────
+
+// EMA Lines
+plot(f_ema, "EMA 9",  color=color.new(#00bcd4, 0), linewidth=1)
+plot(s_ema, "EMA 21", color=color.new(#ff9800, 0), linewidth=1)
+plot(t_ema, "EMA 50", color=color.new(#9e9e9e, 0), linewidth=2)
+
+// Bollinger Bands
+plot(bb_upper, "BB Upper", color=color.new(#4caf50, 60))
+plot(bb_lower, "BB Lower", color=color.new(#4caf50, 60))
+plot(bb_mid,   "BB Mid",   color=color.new(#4caf50, 80))
+
+// Signal Arrows
+plotshape(call_signal,     style=shape.triangleup,   location=location.belowbar, color=color.new(#00e676, 0), size=size.small,  title="CALL Signal")
+plotshape(put_signal,      style=shape.triangledown, location=location.abovebar, color=color.new(#ff1744, 0), size=size.small,  title="PUT Signal")
+plotshape(straddle_signal, style=shape.diamond,      location=location.belowbar, color=color.new(#aa00ff, 0), size=size.tiny,   title="STRADDLE")
+plotshape(sell_call_signal,style=shape.circle,       location=location.abovebar, color=color.new(#ffeb3b, 0), size=size.tiny,   title="SELL CALL")
+plotshape(sell_put_signal, style=shape.circle,       location=location.belowbar, color=color.new(#ffeb3b, 0), size=size.tiny,   title="SELL PUT")
+
+// Background Colors
+bgcolor(bb_squeeze ? color.new(#ffcc00, 92) : na)
+bgcolor(high_vol   ? color.new(#ff4455, 96) : na)
+
+// ─────────────────────────────────────────
+// ALERTS (Douglas: execute without hesitation)
+// ─────────────────────────────────────────
+
+alertcondition(call_signal,      "🟢 CALL Signal",  "OPTS-SKILL: BUY CALL — 30-45 DTE, 0.40 Delta")
+alertcondition(put_signal,       "🔴 PUT Signal",   "OPTS-SKILL: BUY PUT  — 30-45 DTE, 0.40 Delta")
+alertcondition(sell_call_signal, "⚡ SELL CALL",    "OPTS-SKILL: High IV — Sell Covered Call")
+alertcondition(sell_put_signal,  "⚡ SELL PUT",     "OPTS-SKILL: High IV — Sell Cash-Secured Put")
+alertcondition(straddle_signal,  "🔄 STRADDLE",     "OPTS-SKILL: BB Squeeze — Buy Straddle/Strangle")
